@@ -1,0 +1,18 @@
+este material de exemplo foi criado para avaliar uma compressao simples de palavras frequentes em portugues.
+a ideia e mostrar como um programa em c pode trabalhar com processos e threads para ler e gravar arquivos, com um formato direto e facil de entender.
+
+quando falamos de compactacao para texto, o foco aqui e a logica e nao a taxa maxima. ainda assim, e possivel ganhar muito quando escolhemos um pequeno dicionario de palavras muito comuns em textos academicos ou tecnicos.
+por exemplo, e bastante normal ver frases com muitas ocorrencias de palavras curtas, que aparecem em varios contextos, como de, que, para, com, por, em e ate mesmo uma ou duas combinacoes semelhantes.
+
+o objetivo e que o aluno foque no uso de processos e threads: o processo filho faz a compressao com threads, e o processo pai exibe apenas um relatorio final com estatisticas de palavras.
+a leitura do dicionario e simples: cada linha contem um simbolo e uma palavra. quando o programa encontra a palavra correspondente, grava apenas o simbolo no arquivo de saida. caso nao encontre, grava a palavra original.
+
+quando o texto e mais longo, e comum que os ganhos de compressao sejam maiores, porque as palavras do dicionario aparecem muitas vezes.
+se o texto nao tem tantas repeticoes, a diferenca pode ser menor, mas ainda assim a solucao continua util para o aprendizado.
+
+este arquivo inclui varias frases curtas para estimular ocorrencias repetidas de palavras do dicionario.
+de fato, quando pensamos em como escrever, muitas vezes escolhemos estruturas que se repetem em paragrafos diferentes, e isso ajuda o metodo.
+tambem e util observar que o programa deve preservar espacos e pontuacao, para que o arquivo descompactado seja exatamente igual ao original.
+
+para concluir, este texto foi preparado para os testes da atividade.
+ele foi organizado de modo a conter muitos termos do dicionario e varias repeticoes em diferentes linhas.

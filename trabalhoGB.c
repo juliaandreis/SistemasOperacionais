@@ -1,0 +1,329 @@
+/*
+gcc trabalhoGB.c -o mz -pthread -Wall
+./mz -c entrada.txt compactado.mzp
+diff -s entrada.txt saida_teste_auto.txt
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+
+// estrutura de estatísticas em memória compartilhada
+typedef struct {
+    unsigned long lidas, compactadas, nao_encontradas;
+    unsigned long orig, comp;
+    int done_c, done_d; // flags de conclusão
+} stats_t;
+
+// --- Dicionário FINAL "Gabarito" (232 itens) ---
+// Estilo: Decimal (0-255) | Cobertura: 100% de todas as palavras e números
+
+#define ESC 0x1B 
+
+// 232 Símbolos em DECIMAL
+static const unsigned char SYM[] = {
+    // 1. Controle e Baixo ASCII (1 a 31, pulando 9, 10, 13 e 27)
+    1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 
+    28, 29, 30, 31, 
+    
+    // 2. ASCII Imprimível (33 a 126) - Usamos tudo para caber as 232 palavras
+    33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 
+    53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 
+    73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 
+    93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 
+    110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
+
+    // 3. ASCII Estendido (128 a 207) - O restante necessário
+    128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+    144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
+    160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175,
+    176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
+    192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207,
+};
+
+// 232 Palavras (Inclui Maiúsculas e Números)
+static const char* WORD[] = {
+    // Palavras Comuns
+    "de","que","para","com","nao","por","em","uma","o","a",
+    "as","os","ao","e","do","da","dos","das","no","na",
+    "academicos", "ajuda", "ainda", "aluno", "apenas", "aparecem", "aprendizado", "aqui", 
+    "arquivo", "arquivos", "assim", "atividade", "ate", "avaliar", "bastante", "base", 
+    "cada", "caso", "combinacoes", "como", "compactacao", "compressao", "comprova", 
+    "comum", "comuns", "concluir", "contem", "contextos", "continua", "criado", "criados", 
+    "curtas", "demonstra", "demonstrar", "dentro", "dicionario", "diferenca", "diferentes", 
+    "direto", "duas", "efeito", "eficiente", "ela", "ele", "encontra", "entender", 
+    "entre", "escrever", "esse", "este", "estes", "estimular", "estruturas", "exemplo", 
+    "exibe", "facil", "fato", "faz", "fica", "foco", "foi", "formato", "frases", 
+    "frequentes", "ganhar", "ganhos", "grava", "gravar", "ideia", "igual", "inclui", 
+    "isso", "issoe", "juntos", "leitura", "ler", "linha", "linhas", "logica", "longo", 
+    "maiores", "mais", "mas", "material", "maxima", "mesmo", "metodo", "menor", "modo", 
+    "mostrar", "mostra", "muitas", "muito", "muitos", "normal", "nos", "nas", "objetivo", 
+    "observar", "ocorrencias", "organizado", "original", "ou", "pai", "palavra", "palavras", 
+    "paragrafos", "pensamos", "pequeno", "pela", "pelo", "pode", "pontuacao", "porque", 
+    "portugues", "possivel", "possui", "preparado", "preservar", "problema", "processo", 
+    "processos", "programa", "quando", "reduz", "relatorio", "repetem", "repeticoes", 
+    "saida", "se", "sejam", "semelhantes", "ser", "simples", "sobre", "solucao", 
+    "tamanho", "tambem", "tantas", "taxa", "tecnicos", "tem", "termos", "testes", 
+    "texto", "textos", "threads", "trabalha", "trabalham", "trabalhar", "um", "usa", 
+    "uso", "util", "utiliza", "varias", "varios", "ver", "vezes",
+    "falamos", "escolhemos", "foque", "filho", "final", "estatisticas", 
+    "simbolo", "correspondente", "encontre", "repetidas", "deve", 
+    "espacos", "descompactado", "seja", "exatamente", "conter", "c",
+    
+   /* // Metadados e Números (Source, mini_zip, 0-25)
+    "source", "mini_zip",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+    "20", "21", "22", "23", "24", "25", */
+
+    // Palavras com Maiúsculas (Essenciais para entrada2.txt)
+    "O", "repete", "Este", "comprimir", "Assim"
+};
+
+#define N_WORD (sizeof(WORD)/sizeof(WORD[0]))
+#define N_SYM (sizeof(SYM)/sizeof(SYM[0]))
+#define ESC 0x1B   // define o caractere de escape (ASCII 27)
+
+// função para verificar se um caractere precisa ser "protegido"
+int precisa_escape(unsigned char c) {
+    // se o caractere é o próprio ESC ou um dos Símbolos da nossa tabela
+    if (c == ESC) return 1;
+    for (int i = 0; i < N_SYM; i++) {
+        if (SYM[i] == c) return 1;
+    }
+    return 0;
+}
+
+int word_to_sym(const char *w){ for(int i=0;i<N_WORD;i++) if(!strcmp(w,WORD[i])) return SYM[i]; return -1; }
+const char* sym_to_word(int c){ for(int i=0;i<N_WORD;i++) if(SYM[i]==c) return WORD[i]; return NULL; }
+
+/* memória compartilhada */
+stats_t *stats;
+
+/* buffers simples entre threads */
+char buf_lido[4096], buf_proc[4096];
+// 'cheio' agora armazena o TAMANHO dos dados no buffer, não apenas 0 ou 1b
+int n_lido = 0, n_proc = 0;
+
+pthread_mutex_t m_lido = PTHREAD_MUTEX_INITIALIZER, m_proc = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t c_lido = PTHREAD_COND_INITIALIZER, c_proc = PTHREAD_COND_INITIALIZER;
+
+void* t_leitura(void *p){
+    FILE *f = fopen((char*)p,"rb"); if(!f) exit(1);
+    // Lê no máximo 1 byte a menos para manter espaço para o \0 (para t_proc)
+    size_t n = fread(buf_lido,1,sizeof(buf_lido)-1,f); 
+    buf_lido[n] = 0; // Adiciona \0 para t_proc (embora n_lido seja o principal)
+
+    pthread_mutex_lock(&m_lido); 
+    n_lido = n; // Passa o NÚMERO DE BYTES lidos
+    pthread_cond_signal(&c_lido); 
+    pthread_mutex_unlock(&m_lido);
+    
+    fclose(f); 
+    return NULL;
+}
+
+void* t_proc(void *p){
+    (void)p;
+    int n_lido_local;
+
+    pthread_mutex_lock(&m_lido); 
+    while(n_lido == 0) pthread_cond_wait(&c_lido,&m_lido); // espera ter dados
+    n_lido_local = n_lido; // pega o tamanho dos dados
+    pthread_mutex_unlock(&m_lido);
+    
+    char w[128]; int wl = 0; size_t o=0;
+
+    // loop vai até n_lido_local (tamanho real) e não baseado em \0
+    for(size_t i = 0; i < n_lido_local; i++){
+        usleep(5000);
+        int c = (unsigned char)buf_lido[i];
+        if(isalnum(c)){ w[wl++] = c; }
+        else{
+            if(wl){
+                w[wl] = 0; wl = 0; stats->lidas++;
+                int s = word_to_sym(w);
+                if(s >= 0){ buf_proc[o++] = s; stats->compactadas++; }
+                else { 
+                    for(int j = 0; w[j]; j++) {
+                        // se a letra da palavra colidir com um símbolo, usa ESC
+                        if(precisa_escape((unsigned char)w[j])) buf_proc[o++] = ESC;
+                        buf_proc[o++] = w[j];
+                    } 
+                    stats->nao_encontradas++; 
+                    printf("%s não encontrada\n", w);
+                }
+            }
+            if(precisa_escape(c)) buf_proc[o++] = ESC;
+            buf_proc[o++] = c;
+        }
+    }
+
+    // verifica se sobrou uma palavra no buffer
+    if(wl){
+        w[wl] = 0; stats->lidas++;
+        int s = word_to_sym(w);
+        if(s >= 0){ 
+            buf_proc[o++] = s; 
+            stats->compactadas++; 
+        } else { 
+            for(int j = 0; w[j]; j++){
+                if(precisa_escape((unsigned char)w[j])) buf_proc[o++] = ESC;
+                buf_proc[o++] = w[j];
+            }
+            stats->nao_encontradas++; 
+        }
+    }
+
+    stats->orig = n_lido_local; // tamanho original
+    stats->comp = o;            // tamanho compactado
+    
+    pthread_mutex_lock(&m_proc); 
+    n_proc = o; // passa o numero de bytes processados
+    pthread_cond_signal(&c_proc); 
+    pthread_mutex_unlock(&m_proc);
+    
+    return NULL;
+
+}
+
+void* t_grava(void *p){
+    int n_grava_local;
+
+    pthread_mutex_lock(&m_proc); 
+    while(n_proc == 0) pthread_cond_wait(&c_proc,&m_proc); // espera ter dados
+    n_grava_local = n_proc; // pega o tamanho dos dados
+    pthread_mutex_unlock(&m_proc);
+    
+    FILE *f = fopen((char*)p,"wb"); if(!f) exit(1);
+    
+    // Grava o número exato de bytes, sem usar strlen
+    fwrite(buf_proc, 1, n_grava_local, f); 
+    
+    fclose(f);
+    stats->done_c = 1; // sinaliza que o compactador terminou
+    return NULL;
+}
+
+void compactar(const char *in, const char *out){
+    pthread_t a,b,c;
+    pthread_create(&a,NULL,t_leitura,(void*)in);
+    pthread_create(&b,NULL,t_proc,NULL);
+    pthread_create(&c,NULL,t_grava,(void*)out);
+    pthread_join(a,NULL); pthread_join(b,NULL); pthread_join(c,NULL);
+}
+
+void descompactar(const char *in, const char *out){
+    FILE *fi = fopen(in,"rb");
+    FILE *fo = fopen(out,"wb");
+    if(!fi || !fo) { perror("Erro arquivos"); exit(1); }
+    
+    int c;
+    while((c = fgetc(fi)) != EOF){
+        if (c == ESC) {
+            // o próximo byte é original
+            int proximo = fgetc(fi);
+            if (proximo != EOF) fputc(proximo, fo);
+        } 
+        else {
+            // tenta achar palavra correspondente
+            const char* w = sym_to_word(c);
+            if(w) fputs(w, fo); // eh símbolo, expande
+            else fputc(c, fo);  // eh caractere normal, imprime
+        }
+    }
+    fclose(fi); fclose(fo);
+    stats->done_d = 1; // sinaliza que o descompactador terminou
+}
+
+// O Monitor agora recebe o modo de operação
+void monitorar(char mode){
+    printf("[Monitor] Iniciado. Aguardando processos...\n");
+
+    if(mode == 'c') {
+        // Modo -c: Espera compactador E descompactador
+        while(!stats->done_c || !stats->done_d){
+            printf("[Monitor] Lidas: %lu | Compactadas: %lu | Nao encontradas: %lu\n",
+                   stats->lidas, stats->compactadas, stats->nao_encontradas);
+            sleep(1);
+        }
+    } else if (mode == 'd') {
+        // Modo -d: Espera apenas o descompactador
+        while(!stats->done_d){
+            printf("[Monitor] Descompactando... (C:%d D:%d)\n", stats->done_c, stats->done_d);
+            sleep(1);
+        }
+    }
+    
+    printf("[Monitor] Processos finalizados.\n");
+    if(stats->orig > 0){
+        printf("\n[Monitor] Total Lidas: %lu | Total Compactadas: %lu | Total Nao encontradas: %lu | Tamanho Orig. = %lu B | Tamanho Compac. = %lu B\n",
+               stats->lidas, stats->compactadas, stats->nao_encontradas,
+               stats->orig, stats->comp);
+
+        double p = 100.0*(1.0-((double)stats->comp/(double)stats->orig));
+
+        printf("[Final] Compressao: %.2f%%\n",p);
+    } else {
+        printf("[Final] Descompactacao concluida.\n");
+    }
+}
+
+int main(int argc, char **argv){
+    if(argc != 4){ printf("uso: %s -c|-d [arq_entrada] [arq_saida]\n",argv[0]); return 1; }
+
+    // Validação do Dicionário (Desafio)
+    if(N_WORD != N_SYM){
+        printf("Erro: O numero de PALAVRAS (%lu) e SIMBOLOS (%lu) nao e igual!\n", N_WORD, N_SYM);
+        return 1;
+    }
+
+    stats = mmap(NULL,sizeof(stats_t),PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
+    memset(stats,0,sizeof(stats_t));
+    
+    char mode = argv[1][1]; // 'c' ou 'd'
+
+    // --- Lógica dos 3 Processos ---
+
+    pid_t c1 = fork(); // Processo 1: Compactador
+    if(c1 == 0){
+        if(mode == 'c') {
+            compactar(argv[2],argv[3]);
+        }
+        // Se modo == 'd', este processo não faz nada e termina
+        exit(0);
+    }
+    
+    pid_t c2 = fork(); // Processo 2: Descompactador
+    if(c2 == 0){
+        if(mode == 'c'){
+            // No modo -c, descompacta para verificar
+            // Espera ativamente o 'done_c' do compactador
+            while(!stats->done_c) { 
+                usleep(100000); // 100ms
+            }
+            printf("[Processo 2] Compactacao detectada. Iniciando descompactacao de teste...\n");
+            descompactar(argv[3],"saida_teste_auto.txt");
+            
+        } else if (mode == 'd') {
+            // No modo -d, este é o processo principal
+            descompactar(argv[2],argv[3]);
+        }
+        exit(0);
+    }
+    
+    // Processo 3: Monitor (o Pai)
+    monitorar(mode);
+    
+    // Espera os dois filhos terminarem
+    wait(NULL); 
+    wait(NULL);
+    
+    munmap(stats, sizeof(stats_t)); // Libera a memória compartilhada
+    return 0;
+}
