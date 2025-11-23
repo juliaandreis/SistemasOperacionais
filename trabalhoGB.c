@@ -1,7 +1,8 @@
 /*
-gcc trabalhoGB.c -o mz -pthread -Wall
+gcc trabalhoGB.c -o mz -pthread
 ./mz -c entrada.txt compactado.mzp
-diff -s entrada.txt saida_teste_auto.txt
+./mz -d compactado.mzp saida.txt
+diff -s entrada.txt saida.txt
 */
 
 #include <stdio.h>
@@ -21,7 +22,7 @@ typedef struct {
 } stats_t;
 
 // define o caractere de escape (ASCII 27)
-#define ESC 0x1B 
+#define ESC 27 
 
 // Tabela de símbolos usados na compactação
 static const unsigned char SYM[] = {
@@ -66,7 +67,6 @@ static const char* WORD[] = {
 
 // função para verificar se um caractere precisa ser "protegido"
 int precisa_escape(unsigned char c) {
-    // se o caractere é o próprio ESC ou um dos Símbolos da tabela
     if (c == ESC) return 1;
     for (int i = 0; i < N_SYM; i++) {
         if (SYM[i] == c) return 1;
@@ -82,7 +82,6 @@ stats_t *stats;
 
 // buffers entre threads
 char buf_lido[4096], buf_proc[4096];
-// 'cheio' agora armazena o TAMANHO dos dados no buffer, não apenas 0 ou 1b
 int n_lido = 0, n_proc = 0;
 
 pthread_mutex_t m_lido = PTHREAD_MUTEX_INITIALIZER, m_proc = PTHREAD_MUTEX_INITIALIZER;
@@ -90,12 +89,12 @@ pthread_cond_t c_lido = PTHREAD_COND_INITIALIZER, c_proc = PTHREAD_COND_INITIALI
 
 void* t_leitura(void *p){
     FILE *f = fopen((char*)p,"rb"); if(!f) exit(1);
-    // Lê no máximo 1 byte a menos para manter espaço para o \0 (para t_compactacao)
+    // lê no máximo 1 byte a menos para manter espaço para o \0 (para t_compactacao)
     size_t n = fread(buf_lido,1,sizeof(buf_lido)-1,f); 
-    buf_lido[n] = 0; // garante \0 para segurança
+    buf_lido[n] = 0; 
 
     pthread_mutex_lock(&m_lido); 
-    n_lido = n; // Passa o NÚMERO DE BYTES lidos
+    n_lido = n; 
     pthread_cond_signal(&c_lido); 
     pthread_mutex_unlock(&m_lido);
     
@@ -108,14 +107,14 @@ void* t_compactacao(void *p){
     int n_lido_local;
 
     pthread_mutex_lock(&m_lido); 
-    while(n_lido == 0) pthread_cond_wait(&c_lido,&m_lido); // espera ter dados
-    n_lido_local = n_lido; // pega o tamanho dos dados
+    while(n_lido == 0) pthread_cond_wait(&c_lido,&m_lido); 
+    n_lido_local = n_lido; 
     pthread_mutex_unlock(&m_lido);
     
     char w[128]; int wl = 0; size_t cursor = 0;
-    // loop vai até n_lido_local (tamanho real) e não baseado em \0
+    
     for(size_t i = 0; i < n_lido_local; i++){
-        usleep(5000);
+        usleep(5000); // pausa visual para o monitor funcionar
         int c = (unsigned char)buf_lido[i];
 
         if(isalnum(c)){
@@ -132,21 +131,19 @@ void* t_compactacao(void *p){
                     buf_proc[cursor++] = s;
                     stats->compactadas++;
                 } else {
-                    for(int j = 0; w[j]; j++){ // se a letra da palavra colidir com símbolo, usa escape
+                    for(int j = 0; w[j]; j++){
                         if(precisa_escape((unsigned char)w[j])) 
                             buf_proc[cursor++] = ESC;
                         buf_proc[cursor++] = w[j];
                     }
                     stats->nao_encontradas++;
-                    printf("%s nao encontrada\n", w);
                 }
             }
-
             if(precisa_escape(c)) buf_proc[cursor++] = ESC;
             buf_proc[cursor++] = c;
         }
     }
-    // processa a última palavra se existir
+    
     if(wl){
         w[wl] = 0;
         stats->lidas++;
@@ -176,22 +173,18 @@ void* t_compactacao(void *p){
     return NULL;
 }
 
-
 void* t_gravacao(void *p){
     int n_grava_local;
 
     pthread_mutex_lock(&m_proc); 
-    while(n_proc == 0) pthread_cond_wait(&c_proc,&m_proc); // espera ter dados
-    n_grava_local = n_proc; // pega o tamanho dos dados
+    while(n_proc == 0) pthread_cond_wait(&c_proc,&m_proc); 
+    n_grava_local = n_proc; 
     pthread_mutex_unlock(&m_proc);
     
     FILE *f = fopen((char*)p,"wb"); if(!f) exit(1);
-    
-    // Grava o número exato de bytes, sem usar strlen
     fwrite(buf_proc, 1, n_grava_local, f); 
-    
     fclose(f);
-    stats->done_c = 1; // sinaliza que o compactador terminou
+    stats->done_c = 1; 
     return NULL;
 }
 
@@ -209,60 +202,114 @@ void descompactar(const char *in, const char *out){
     if(!fi || !fo) { perror("Erro arquivos"); exit(1); }
     
     int c;
+    stats->lidas = stats->compactadas = stats->nao_encontradas = stats->orig = stats->comp = 0; // reset
+    
     while((c = fgetc(fi)) != EOF){
+        usleep(5000); 
+        stats->lidas++; 
+        stats->orig++; // contabiliza tamanho do arquivo de entrada (compactado)
+
         if (c == ESC) {
-            // o próximo byte é original
             int proximo = fgetc(fi);
-            if (proximo != EOF) fputc(proximo, fo);
+            if (proximo != EOF){
+                fputc(proximo, fo);
+                stats->lidas++; // leu mais um byte
+                stats->orig++;
+                stats->compactadas++; 
+                stats->comp++; // escreveu 1 byte no arquivo final
+            }
         } 
         else {
-            // tenta achar palavra correspondente
             const char* w = sym_to_word(c);
-            if(w) fputs(w, fo); // eh símbolo, expande
-            else fputc(c, fo);  // eh caractere normal, imprime
+            if(w){
+                fputs(w, fo); 
+                stats->compactadas++; 
+                stats->comp += strlen(w); // escreveu strlen(w) bytes no arquivo final
+            } 
+            else {
+                fputc(c, fo);
+                stats->compactadas++;
+                stats->comp++; // escreveu 1 byte no arquivo final
+            }
         }
     }
     fclose(fi); fclose(fo);
     stats->done_d = 1; // sinaliza que o descompactador terminou
 }
 
-// O Monitor agora recebe o modo de operação
+
 void monitorar(char mode){
     printf("[Monitor] Iniciado. Aguardando processos...\n");
 
     if(mode == 'c') {
-        // Modo -c: Espera compactador E descompactador
-        while(!stats->done_c || !stats->done_d){
-            printf("[Monitor] Lidas: %lu | Compactadas: %lu | Nao encontradas: %lu\n",
-                   stats->lidas, stats->compactadas, stats->nao_encontradas);
-            sleep(1);
+        if(mode == 'c') {
+        // MONITORANDO COMPACTAÇÃO
+        while(!stats->done_c){
+            printf("\r[Monitor] Lidas: %lu | Compactadas: %lu | Nao encontradas: %lu     ",
+                stats->lidas, stats->compactadas, stats->nao_encontradas);
+            fflush(stdout);
+            usleep(200000);
         }
-    } else if (mode == 'd') {
-        // Modo -d: Espera apenas o descompactador
+        printf("\r[Monitor] Lidas: %lu | Compactadas: %lu | Nao encontradas: %lu\n",
+                stats->lidas, stats->compactadas, stats->nao_encontradas);
+        printf("\n[Monitor] Processo de compactacao finalizado.\n");
+
+        if(stats->orig > 0){
+            double p = 100.0 * (1.0 - ((double)stats->comp / (double)stats->orig));
+            printf("\n[Monitor] ------ RELATORIO COMPACTAÇÃO ------\n\n"); 
+            printf("          Total Lidas: %lu\n", stats->lidas);      
+            printf("          Total Compactadas: %lu \n", stats->compactadas);
+            printf("          Total Nao encontradas: %lu\n", stats->nao_encontradas);
+            printf("          Tamanho Original (entrada)= %lu B\n", stats->orig);
+            printf("          Tamanho Compactado (saida)= %lu B\n",stats->comp);
+            printf("          Compressao: %.2f%%\n", p);
+            printf("--------------------------------------------------\n");
+        }
+        
+        // pausa para o usuário ler antes de começar a validação
+        sleep(3);
+        
+        // MONITORANDO COMPACTAÇÃO TESTE
+        // espera o descompactador terminar
         while(!stats->done_d){
-            printf("[Monitor] Descompactando... (C:%d D:%d)\n", stats->done_c, stats->done_d);
-            sleep(1);
+             printf("\r[Monitor] Bytes Lidos: %lu | Tokens Processados: %lu     ",
+                    stats->lidas, stats->compactadas);
+             fflush(stdout);
+             usleep(200000);
         }
+        
+        printf("\r[Monitor] Bytes Lidos: %lu | Tokens Processados: %lu\n",
+                    stats->lidas, stats->compactadas);
+        printf("\n[Monitor] Processo de descompactacao (teste) finalizado.\n");
+        printf("\n[Monitor] ------ RELATORIO DESCOMPACTAÇÃO ------\n\n");
+        printf("          Total Tokens Processados: %lu\n", stats->compactadas);
+        printf("          Tamanho Arquivo Compactado (entrada) = %lu B\n", stats->orig);
+        printf("          Tamanho Arquivo Descompactado (saida) = %lu B\n",stats->comp);
+        printf("--------------------------------------------------\n");
+
     }
-    
-    printf("[Monitor] Processos finalizados.\n");
-    if(stats->orig > 0){
-        printf("\n[Monitor] Total Lidas: %lu | Total Compactadas: %lu | Total Nao encontradas: %lu | Tamanho Orig. = %lu B | Tamanho Compac. = %lu B\n",
-               stats->lidas, stats->compactadas, stats->nao_encontradas,
-               stats->orig, stats->comp);
-
-        double p = 100.0*(1.0-((double)stats->comp/(double)stats->orig));
-
-        printf("[Final] Compressao: %.2f%%\n",p);
-    } else {
-        printf("[Final] Descompactacao concluida.\n");
+    } else if (mode == 'd') {
+        // modo descompactação
+        while(!stats->done_d){
+            printf("\r[Monitor] Bytes Lidos: %lu | Tokens Processados: %lu",
+                    stats->lidas, stats->compactadas);
+            fflush(stdout);
+            usleep(200000);
+        }
+        printf("\r[Monitor] Bytes Lidos: %lu | Tokens Processados: %lu\n",
+                    stats->lidas, stats->compactadas);
+        printf("[Monitor] Processo finalizado.\n");
+        printf("\n[Monitor] Total Tokens Processados: %lu\n", stats->compactadas);
+        printf("          Tamanho Arquivo Compactado (entrada) = %lu B\n", stats->orig);
+        printf("          Tamanho Arquivo Descompactado (saida) = %lu B\n",stats->comp);
     }
 }
+
 
 int main(int argc, char **argv){
     if(argc != 4){ printf("uso: %s -c|-d [arq_entrada] [arq_saida]\n",argv[0]); return 1; }
 
-    // Validação do Dicionário (Desafio)
+    // validação do dicionário
     if(N_WORD != N_SYM){
         printf("Erro: O numero de PALAVRAS (%lu) e SIMBOLOS (%lu) nao e igual!\n", N_WORD, N_SYM);
         return 1;
@@ -271,43 +318,41 @@ int main(int argc, char **argv){
     stats = mmap(NULL,sizeof(stats_t),PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
     memset(stats,0,sizeof(stats_t));
     
-    char mode = argv[1][1]; // 'c' ou 'd'
+    char mode = argv[1][1]; 
 
-    // 3 processos... 
-    pid_t c1 = fork(); // Processo 1: Compactador
+    // 3 processos
+    pid_t c1 = fork(); // processo 1: compactador
     if(c1 == 0){
         if(mode == 'c') {
+            printf("\n[Processo 1] Iniciando compactacao...\n"); 
             compactar(argv[2],argv[3]);
         }
-        // Se modo == 'd', este processo não faz nada e termina
         exit(0);
     }
-    
-    pid_t c2 = fork(); // Processo 2: Descompactador
+
+    pid_t c2 = fork(); // processo 2: descompactador
     if(c2 == 0){
         if(mode == 'c'){
-            // No modo -c, descompacta para verificar
-            // Espera ativamente o 'done_c' do compactador
+            // espera o compactador terminar
             while(!stats->done_c) { 
-                usleep(100000); // 100 ms
+                usleep(100000); 
             }
-            printf("[Processo 2] Compactacao detectada. Iniciando descompactacao de teste...\n");
-            descompactar(argv[3],"saida_teste_auto.txt");
+            // espera 2 segundos para o monitor imprimir o relatório
+            sleep(2); 
+            printf("\n[Processo 2] Compactacao detectada. Iniciando descompactacao de teste...\n");
+            descompactar(argv[3],"saida_teste.txt");
             
         } else if (mode == 'd') {
-            // No modo -d, este é o processo principal
             descompactar(argv[2],argv[3]);
         }
         exit(0);
     }
     
-    // Processo 3: Monitor 
-    monitorar(mode);
+    monitorar(mode); // processo 3: monitor 
     
-    // Espera os dois filhos terminarem
     wait(NULL); 
     wait(NULL);
     
-    munmap(stats, sizeof(stats_t)); // Libera a memória compartilhada
+    munmap(stats, sizeof(stats_t)); 
     return 0;
 }
